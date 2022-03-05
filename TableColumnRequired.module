@@ -1,0 +1,160 @@
+<?php namespace ProcessWire;
+
+class TableColumnRequired extends WireData implements Module {
+
+	/**
+	 * Module information
+	 */
+	public static function getModuleInfo() {
+		return array(
+			'title' => 'Table Column Required',
+			'summary' => 'Adds a "required" option for columns within ProFields Table.',
+			'version' => '0.1.0',
+			'author' => 'Robin Sallis',
+			'href' => 'https://github.com/Toutouwai/TableColumnRequired',
+			'icon' => 'asterisk',
+			'autoload' => 'template=admin',
+			'requires' => 'ProcessWire>=3.0.0, PHP>=5.4.0, FieldtypeTable',
+		);
+	}
+
+	/**
+	 * Ready
+	 */
+	public function ready() {
+		$this->addHookAfter('Field::getInputfield', $this, 'checkRequired');
+		$this->addHookAfter('InputfieldTable::renderCol', $this, 'afterRenderCol');
+		$this->addHookAfter('FieldtypeTable::getConfigInputfields', $this, 'addConfig');
+		$this->addHookAfter('FieldtypeTable::getConfigAllowContext', $this, 'allowContext');
+	}
+
+	/**
+	 * Allow setting config field in template context
+	 *
+	 * @param HookEvent $event
+	 */
+	protected function checkRequired(HookEvent $event) {
+		/** @var Field $field */
+		$field = $event->object;
+		/** @var Page $page */
+		$page = $event->arguments(0);
+		/** @var InputfieldTable $inputfield */
+		$inputfield = $event->return;
+		// Only for Table fields
+		if($field->type != 'FieldtypeTable') return;
+		// Only for ProcessPageEdit and similar
+		if(!$this->wire()->process instanceof WirePageEditor) return;
+		// Only if there is at least one required column
+		$required_column_names = $field->required_columns;
+		if(!$required_column_names) return;
+
+		// Get column info for required columns
+		$columns = $field->type->getColumnsByName($field);
+
+		// Add asterisk to column label
+		foreach($required_column_names as $column_name) {
+			$key = 'col' . $columns[$column_name]['n'] . 'label';
+			$field->$key .= '*';
+		}
+
+		// Get raw table data from the database
+		$raw_data = $this->wire()->database->query("SELECT * FROM field_$field->name WHERE pages_id=$page->id")->fetchAll(\PDO::FETCH_ASSOC);
+		$errors = [];
+		// Loop over data to find empty required columns
+		foreach($raw_data as $row) {
+			$empty_columns = [];
+			foreach($required_column_names as $column_name) {
+				if(empty($row[$column_name])) $empty_columns[] = $column_name;
+			}
+			if($empty_columns) {
+				$errors[] = [
+					'id' => $row['data'],
+					'columns' => $empty_columns,
+				];
+			}
+		}
+
+		// Return early if no errors
+		$error_count = count($errors);
+		if(!$error_count) return;
+
+		// Show error messages
+		$column_label = $this->_n('column', 'columns', count($required_column_names));
+		$row_label = $this->_n('row is', 'rows are', $error_count);
+		$error_message = sprintf($this->_("%d %s missing values in required %s"), $error_count, $row_label, $column_label);
+		$field_label = $field->get('label|name');
+		$this->wire()->error("$field_label: $error_message");
+		$inputfield->error($error_message);
+
+		// Send error data to JS
+		$key = $inputfield->name;
+		$inputfield->wrapAttr('data-tcr-key', $key);
+		$json = wireEncodeJSON($errors);
+		$inputfield->appendMarkup = <<<EOT
+<script>
+ProcessWire.config.TableColumnRequired.$key = $json;
+</script>
+EOT;
+
+		// Add assets
+		$config = $this->wire()->config;
+		$config->js($this->className, $errors);
+		$info = $this->getModuleInfo();
+		$version = $info['version'];
+		$config->styles->add($config->urls->$this . "$this.css?v=$version");
+		$config->scripts->add($config->urls->$this . "$this.js?v=$version");
+	}
+
+	/**
+	 * After InputfieldTable::renderCol
+	 * Wrap the column markup so the column name can be identified by class
+	 *
+	 * @param HookEvent $event
+	 */
+	protected function afterRenderCol(HookEvent $event) {
+		$col = $event->arguments(0);
+		$event->return = "<div class='col-{$col['name']}'>$event->return</div>";
+	}
+
+	/**
+	 * Add config field
+	 *
+	 * @param HookEvent $event
+	 */
+	protected function addConfig(HookEvent $event) {
+		$field = $event->arguments(0);
+		/** @var InputfieldWrapper $wrapper */
+		$wrapper = $event->return;
+		$modules = $this->wire()->modules;
+
+		/* @var InputfieldAsmSelect $f */
+		$f = $modules->get('InputfieldAsmSelect');
+		$f_name = 'required_columns';
+		$f->name = $f_name;
+		$f->label = $this->_('Required columns');
+		$f->addOptions(array_keys($field->type->getColumnsByName($field)), false);
+		$f->icon = 'asterisk';
+		$f->value = $field->$f_name;
+		if(!$f->value) $f->collapsed = Inputfield::collapsedYes;
+
+		// Add field to last fieldset - not sure if fieldset was always present so fall back to wrapper when needed
+		$last_inputfield = $wrapper->children->last();
+		if($last_inputfield->className === 'InputfieldFieldset') {
+			$last_inputfield->add($f);
+		} else {
+			$wrapper->add($f);
+		}
+	}
+
+	/**
+	 * Allow setting config field in template context
+	 *
+	 * @param HookEvent $event
+	 */
+	protected function allowContext(HookEvent $event) {
+		$allowed = $event->return;
+		$allowed[] = 'required_columns';
+		$event->return = $allowed;
+	}
+
+}

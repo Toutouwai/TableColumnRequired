@@ -1,0 +1,4 @@
+.InputfieldTable[data-tcr-key].InputfieldStateError > .InputfieldHeader, .InputfieldTable[data-tcr-key].InputfieldStateError > .InputfieldContent {
+  background-color: transparent !important; }
+.InputfieldTable[data-tcr-key] .error-required {
+  background-color: #fae9eb !important; }

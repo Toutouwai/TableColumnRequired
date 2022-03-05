@@ -1,0 +1,8 @@
+.InputfieldTable[data-tcr-key] {
+	// Don't highlight the entire inputfield
+	&.InputfieldStateError {
+		> .InputfieldHeader, > .InputfieldContent { background-color:transparent !important; }
+	}
+	// Highlight individual cells
+	.error-required { background-color:#fae9eb !important; }
+}
