@@ -9,7 +9,7 @@ class TableColumnRequired extends WireData implements Module {
 		return array(
 			'title' => 'Table Column Required',
 			'summary' => 'Adds a "required" option for columns within ProFields Table.',
-			'version' => '0.1.0',
+			'version' => '0.1.1',
 			'author' => 'Robin Sallis',
 			'href' => 'https://github.com/Toutouwai/TableColumnRequired',
 			'icon' => 'asterisk',
@@ -22,69 +22,56 @@ class TableColumnRequired extends WireData implements Module {
 	 * Ready
 	 */
 	public function ready() {
-		$this->addHookAfter('Field::getInputfield', $this, 'checkRequired');
+		$this->addHookAfter('Field::getInputfield', $this, 'afterGetInputfield');
 		$this->addHookAfter('InputfieldTable::renderCol', $this, 'afterRenderCol');
+		$this->addHookAfter('InputfieldTable::renderReadyHook', $this, 'afterRenderReady');
+		$this->addHookAfter('InputfieldTable::processInput', $this, 'afterProcessInput');
 		$this->addHookAfter('FieldtypeTable::getConfigInputfields', $this, 'addConfig');
 		$this->addHookAfter('FieldtypeTable::getConfigAllowContext', $this, 'allowContext');
 	}
 
 	/**
-	 * Allow setting config field in template context
+	 * After Field::getInputfield
 	 *
 	 * @param HookEvent $event
 	 */
-	protected function checkRequired(HookEvent $event) {
+	protected function afterGetInputfield(HookEvent $event) {
 		/** @var Field $field */
 		$field = $event->object;
-		/** @var Page $page */
-		$page = $event->arguments(0);
-		/** @var InputfieldTable $inputfield */
-		$inputfield = $event->return;
 		// Only for Table fields
 		if($field->type != 'FieldtypeTable') return;
 		// Only for ProcessPageEdit and similar
 		if(!$this->wire()->process instanceof WirePageEditor) return;
 		// Only if there is at least one required column
-		$required_column_names = $field->required_columns;
-		if(!$required_column_names) return;
+		if(!$field->required_columns) return;
 
 		// Get column info for required columns
 		$columns = $field->type->getColumnsByName($field);
 
 		// Add asterisk to column label
-		foreach($required_column_names as $column_name) {
+		foreach($field->required_columns as $column_name) {
 			$key = 'col' . $columns[$column_name]['n'] . 'label';
-			$field->$key .= '*';
+			if(substr($field->$key, -1) !== '*') $field->$key .= '*';
 		}
+	}
 
-		// Get raw table data from the database
-		$raw_data = $this->wire()->database->query("SELECT * FROM field_$field->name WHERE pages_id=$page->id")->fetchAll(\PDO::FETCH_ASSOC);
-		$errors = [];
-		// Loop over data to find empty required columns
-		foreach($raw_data as $row) {
-			$empty_columns = [];
-			foreach($required_column_names as $column_name) {
-				if(empty($row[$column_name])) $empty_columns[] = $column_name;
-			}
-			if($empty_columns) {
-				$errors[] = [
-					'id' => $row['data'],
-					'columns' => $empty_columns,
-				];
-			}
-		}
+	/**
+	 * After InputfieldTable::renderReadyHook
+	 *
+	 * @param HookEvent $event
+	 */
+	protected function afterRenderReady(HookEvent $event) {
+		/** @var InputfieldTable $inputfield */
+		$inputfield = $event->object;
+		$field = $inputfield->hasField;
+		// Only if there is at least one required column
+		if(!$field->required_columns) return;
+		$session = $this->wire()->session;
 
-		// Return early if no errors
-		$error_count = count($errors);
-		if(!$error_count) return;
-
-		// Show error messages
-		$column_label = $this->_n('column', 'columns', count($required_column_names));
-		$row_label = $this->_n('row is', 'rows are', $error_count);
-		$error_message = sprintf($this->_("%d %s missing values in required %s"), $error_count, $row_label, $column_label);
-		$field_label = $field->get('label|name');
-		$this->wire()->error("$field_label: $error_message");
-		$inputfield->error($error_message);
+		// Get any error data from session and clear
+		$errors = $session->getFor($this, "tcr_errors_$inputfield->name");
+		if(!$errors) return;
+		$session->removeFor($this, "tcr_errors_$inputfield->name");
 
 		// Send error data to JS
 		$key = $inputfield->name;
@@ -107,13 +94,65 @@ EOT;
 
 	/**
 	 * After InputfieldTable::renderCol
-	 * Wrap the column markup so the column name can be identified by class
 	 *
 	 * @param HookEvent $event
 	 */
 	protected function afterRenderCol(HookEvent $event) {
+		/** @var InputfieldTable $inputfield */
+		$inputfield = $event->object;
+		$field = $inputfield->hasField;
+		// Only if there is at least one required column
+		if(!$field->required_columns) return;
+		// Wrap the column markup so the column name can be identified by class
 		$col = $event->arguments(0);
 		$event->return = "<div class='col-{$col['name']}'>$event->return</div>";
+	}
+
+	/**
+	 * After InputfieldTable::processInput
+	 *
+	 * @param HookEvent $event
+	 */
+	protected function afterProcessInput(HookEvent $event) {
+		/** @var InputfieldTable $inputfield */
+		$inputfield = $event->object;
+		$input = $event->arguments(0);
+		$field = $inputfield->hasField;
+		// Only if there is at least one required column
+		if(!$field->required_columns) return;
+
+		// Loop over input data to check for empty required columns
+		$errors = [];
+		$row_num = 0;
+		do {
+			$row_num++;
+			$id_name = $inputfield->name . "_{$row_num}__id";
+			$id = $input->$id_name;
+			if(is_null($id)) break;
+			$id = (int) $id;
+			$empty_columns = [];
+			foreach($field->required_columns as $column_name) {
+				$name_attr = $inputfield->name . "_{$row_num}_{$column_name}";
+				$value = $input->$name_attr;
+				if(!$value) $empty_columns[] = $column_name;
+			}
+			if($empty_columns) {
+				$errors[] = [
+					'id' => $id,
+					'columns' => $empty_columns,
+				];
+			}
+		} while(1);
+		$this->wire()->session->setFor($this, "tcr_errors_$inputfield->name", $errors);
+
+		// Show error message
+		$error_count = count($errors);
+		if($error_count) {
+			$column_label = $this->_n('column', 'columns', count($field->required_columns));
+			$row_label = $this->_n('row is', 'rows are', $error_count);
+			$error_message = sprintf($this->_("%d %s missing values in required %s"), $error_count, $row_label, $column_label);
+			$inputfield->error($error_message);
+		}
 	}
 
 	/**
