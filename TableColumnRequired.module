@@ -9,7 +9,7 @@ class TableColumnRequired extends WireData implements Module {
 		return array(
 			'title' => 'Table Column Required',
 			'summary' => 'Adds a "required" option for columns within ProFields Table.',
-			'version' => '0.1.1',
+			'version' => '0.1.2',
 			'author' => 'Robin Sallis',
 			'href' => 'https://github.com/Toutouwai/TableColumnRequired',
 			'icon' => 'asterisk',
@@ -124,12 +124,22 @@ EOT;
 		// Loop over input data to check for empty required columns
 		$errors = [];
 		$row_num = 0;
+		$last_id_raw = $this->wire()->database->query("SELECT data FROM field_$field->name ORDER BY data DESC LIMIT 1")->fetchAll(\PDO::FETCH_COLUMN);
+		$last_id = $last_id_raw ? reset($last_id_raw) : null;
 		do {
 			$row_num++;
 			$id_name = $inputfield->name . "_{$row_num}__id";
 			$id = $input->$id_name;
 			if(is_null($id)) break;
 			$id = (int) $id;
+			$delete_name = $inputfield->name . "_{$row_num}__delete";
+			$delete = (int) $input->$delete_name;
+			if($delete) continue;
+			// If this is a new row, try and work out the likely id by incrementing the last id from the DB table
+			if(!$id && $last_id) {
+				$last_id++;
+				$id = $last_id;
+			}
 			$empty_columns = [];
 			foreach($field->required_columns as $column_name) {
 				$name_attr = $inputfield->name . "_{$row_num}_{$column_name}";
